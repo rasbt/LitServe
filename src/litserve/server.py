@@ -14,6 +14,7 @@ from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request, R
 from fastapi.security import APIKeyHeader
 
 from litserve import LitAPI
+from litserve.schemas.openai import UsageInfo, ChatCompletionRequest, ChatMessage, ChatCompletionResponseChoice, ChatCompletionResponse
 
 
 # if defined, it will require clients to auth with X-API-Key in the header
@@ -186,6 +187,7 @@ class LitServer:
         async def index(request: Request) -> Response:
             return Response(content="litserve running")
 
+        # TODO: automatically apply when the API implements the predict method
         @self.app.post("/predict", dependencies=[Depends(setup_auth())])
         async def predict(request: self.request_type, background_tasks: BackgroundTasks) -> self.response_type:
             uid = uuid.uuid4()
@@ -208,6 +210,66 @@ class LitServer:
                 raise data
 
             return data
+
+        # TODO: automatically apply when the API is a OpenAILitAPI, don't otherwise
+        @self.app.post('/v1/chat/completions', dependencies=[Depends(setup_auth())])
+        async def chat(request: ChatCompletionRequest, background_tasks: BackgroundTasks) -> ChatCompletionResponse:
+            if request.stream:
+                raise HTTPException(status_code=400, detail="Streaming not currently supported")
+
+            if request.stop is not None:
+                raise HTTPException(status_code=400, detail="Parameter stop not currently supported")
+
+            if request.frequency_penalty:
+                raise HTTPException(status_code=400, detail="Parameter frequency_penalty not currently supported")
+
+            if request.presence_penalty:
+                raise HTTPException(status_code=400, detail="Parameter presence_penalty not currently supported")
+
+            if request.max_tokens is not None:
+                raise HTTPException(status_code=400, detail="Parameter max_tokens not currently supported")
+
+            if request.top_p != 1.0:
+                raise HTTPException(status_code=400, detail="Parameter top_p not currently supported")
+
+            uids = [uuid.uuid4() for _ in range(request.n)]
+            pipes = []
+
+            for uid in uids:
+                pipe_s, pipe_r = self.new_pipe()
+
+                self.app.request_buffer[uid] = (request, pipe_s)
+                self.app.request_queue.put(uid)
+
+                background_tasks.add_task(cleanup, self.app.request_buffer, uid)
+
+                pipes.append(pipe_r)
+
+            responses = []
+            for pipe_r in pipes:
+                data = await asyncio.get_running_loop().create_task(get_from_pipe(pipe_r, self.app.timeout))
+                responses.append(data)
+
+            choices = []
+
+            usage = UsageInfo()
+            for i, response in enumerate(responses):
+                choices.append(
+                    ChatCompletionResponseChoice(
+                        index=i,
+                        message=ChatMessage(role="assistant", content=response["text"]),
+                        finish_reason=response.get("finish_reason", "stop"),
+                    )
+                )
+                if "usage" in response:
+                    task_usage = UsageInfo.parse_obj(response["usage"])
+                else:
+                    task_usage = UsageInfo()
+                for usage_key, usage_value in task_usage.dict().items():
+                    setattr(usage, usage_key, getattr(usage, usage_key) + usage_value)
+
+            model = request.model or "litserve"
+            return ChatCompletionResponse(model=model, choices=choices, usage=usage)
 
     def generate_client_file(self):
         src_path = os.path.join(os.path.dirname(__file__), "python_client.py")

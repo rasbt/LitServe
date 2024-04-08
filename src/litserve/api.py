@@ -58,3 +58,16 @@ class LitAPI(ABC):
     def encode_response(self, output):
         """Convert the model output to a response payload."""
         pass
+
+
+class OpenAILitAPI(LitAPI):
+
+    def decode_request(self, request):
+        # This needs to return something that can be batched,
+        # so tokenizing is recommended
+        return request
+
+    def encode_response(self, output):
+        # Same comment as for decode_request
+        return output
+

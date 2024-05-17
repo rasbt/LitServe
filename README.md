@@ -466,7 +466,7 @@ class SimpleStreamAPI(ls.LitAPI):
 
     def encode_response(self, output):
         for out in output:
-            yield json.dumps({"output": out})
+            yield {"output": out}
 
 
 if __name__ == "__main__":
